@@ -1,5 +1,5 @@
 import torch
-import faiss
+# import faiss
 import numpy as np
 from tqdm import tqdm
 from sklearn.cluster import KMeans
@@ -8,6 +8,11 @@ from torch.utils.data import Dataset, DataLoader
 
 from C2C.models.resnet import PatchClassifier, Enc
 from C2C.dataloader import *
+
+import multiprocessing
+# multiprocessing.set_start_method('spawn', True)
+from joblib import Parallel, delayed
+import time
 
 
 
@@ -46,10 +51,12 @@ def cluster_representation(im, num_cluster=8):
         - path list: list of patch path
     """
     img_embedding, path_list = im[0], im[1]
-    img_embedding = normalize(img_embedding).astype('float32')
-    kmeans = faiss.Kmeans(img_embedding.shape[1], min(num_cluster, len(img_embedding)))
-    kmeans.train(img_embedding)
-    label_metric, label = kmeans.assign(img_embedding)    
+    # img_embedding = normalize(img_embedding).astype('float32')
+    # kmeans = faiss.Kmeans(img_embedding.shape[1], min(num_cluster, len(img_embedding)))
+    # kmeans.train(img_embedding)
+    # label_metric, label = kmeans.assign(img_embedding)
+    label = np.zeros(len(path_list))
+    label_metric = 0
     return label, label_metric, path_list    
 
 def select_topk(dl, enc):    
@@ -94,21 +101,110 @@ def run_clustering(train_img_dic, valid_img_dic, model_base, data_transforms, nu
     train_img_cls = {}
     with torch.no_grad():
         for im, im_list in tqdm(train_img_dic.items()):
+            label = np.zeros(len(im_list))
+            label_metric = 0
+            path_list  = im_list
+
+            # td = WSIDataloader(im_list, transform=data_transforms)
+            # tdl = torch.utils.data.DataLoader(td, batch_size=128, shuffle=False)
+            
+            # if topk:
+            #     # Use patch classifier to identify most probable diseased patches
+            #     img_rep, path_list = select_topk(tdl, enc)
+            #     cluster = np.ones(len(path_list))
+            #     # MAX NUM PATCHES = 64 HARDCODE
+            #     cluster[np.argsort(img_rep.flatten())[::-1][:64]] = 0
+            #     pl = path_list
+            # else:
+            #     cluster, cluster_distance, pl = cluster_representation(get_representation(tdl, enc),
+            #                                                           num_cluster=num_cluster)            
+            train_img_cls[im] = list(np.array(label))
+            train_img[im] = list(np.array(path_list))
+    
+    del enc
+    return train_img, train_img_cls, valid_img, valid_img_cls
+
+def process_train_img(train_img_dic, topk, enc, data_transforms, num_cluster=10):
+    train_img = {}
+    train_img_cls = {}
+    with torch.no_grad():
+        for im, im_list in tqdm(train_img_dic, desc="processing train images"):
             td = WSIDataloader(im_list, transform=data_transforms)
             tdl = torch.utils.data.DataLoader(td, batch_size=128, shuffle=False)
-            
+
             if topk:
                 # Use patch classifier to identify most probable diseased patches
                 img_rep, path_list = select_topk(tdl, enc)
                 cluster = np.ones(len(path_list))
                 # MAX NUM PATCHES = 64 HARDCODE
-                cluster[np.argsort(img_rep.flatten())[::-1][:64]] = 0
+                cluster[np.argsort(img_rep.flatten())[::-1][:8]] = 0
                 pl = path_list
             else:
                 cluster, cluster_distance, pl = cluster_representation(get_representation(tdl, enc),
-                                                                      num_cluster=num_cluster)            
+                                                                      num_cluster=num_cluster)
             train_img_cls[im] = list(np.array(cluster))
             train_img[im] = list(np.array(pl))
+
+            # if pbar is not None:
+            #     pbar.update(1)
+
+    del enc
+    return train_img, train_img_cls
+
+def multi_run_clustering(train_img_dic, valid_img_dic, model_base, data_transforms, num_cluster=8,
+                   for_validation=False, topk=False):
     
+    
+    # define input arguments
+    train_img_dic = train_img_dic
+    # topk = ...
+
+    train_img_tuples = [(im, im_list) for im, im_list in train_img_dic.items()]
+    
+    if topk:
+        enc = PatchClassifier(model_base)
+    else:
+        enc = Enc(model_base)
+    enc.eval()
+    enc = enc.cuda()
+
+    valid_img = {}
+    valid_img_cls = {}
+    for im, im_list in tqdm(valid_img_dic.items()):    
+        valid_img[im] = im_list
+        valid_img_cls[im] = [0]*len(im_list)
+
+    # enc = ...
+    data_transforms = data_transforms
+    # num_cluster = ...
+
+    # create a pool of processes
+    # num_processes = multiprocessing.cpu_count()
+    num_processes = 8
+
+    
+    
+    # create a list of input arguments for each process
+    # map the function to the input arguments
+    stride_split = len(train_img_tuples)//3
+    res = tuple(train_img_tuples[x:x + stride_split] for x in range(0, len(train_img_tuples), stride_split))
+
+    # pbar = tqdm(total=len(train_img_dic), desc="Clustering images")
+    
+    outputs = Parallel(n_jobs=num_processes)(
+        delayed(process_train_img)(train_img_tuples_part, topk, enc, data_transforms, num_cluster)
+        for train_img_tuples_part in res)
+
+    time.sleep(10)
+    
+    # combine the outputs from all processes
+    train_img = {}
+    train_img_cls = {}
+    for output in outputs:
+        for k, v in output[0].items():
+            train_img[k] = v
+        for k, v in output[1].items():
+            train_img_cls[k] = v
+
     del enc
     return train_img, train_img_cls, valid_img, valid_img_cls

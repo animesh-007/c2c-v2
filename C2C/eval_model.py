@@ -21,6 +21,7 @@ def eval_model(test_images, test_images_label, model, data_transforms):
             tdl = torch.utils.data.DataLoader(td, batch_size=128,
                                              shuffle=False, num_workers=0)
             t_pred, _ = compute_attn_df(tdl, model)
+            print(t_pred)
             pred_list.append(t_pred)
             pred_fname.append(im)
 
@@ -30,12 +31,50 @@ def eval_model(test_images, test_images_label, model, data_transforms):
     print('Test Accuracy: ', sum(pred_df['actual']==pred_df['prediction'])/pred_df.shape[0])            
     
     # Confusion Matrix
-    label_map = {0: 'Normal', 1: 'Disease'}
-    actual_label = pd.Series([label_map[x] for x in pred_df['actual'].tolist()], name='Actual')
-    predicted_label = pd.Series([label_map[x] for x in pred_list], name='Predicted')
-    print(pd.crosstab(actual_label, predicted_label))
+    # label_map = {0: 'Normal', 1: 'Disease'}
+    # actual_label = pd.Series([label_map[x] for x in pred_df['actual'].tolist()], name='Actual')
+    # predicted_label = pd.Series([label_map[x] for x in pred_list], name='Predicted')
+    # print(pd.crosstab(actual_label, predicted_label))
     
     return sum(pred_df['actual']==pred_df['prediction'])/pred_df.shape[0]
+
+
+def eval_model_dataloader(test_images, test_images_label, model, data_transforms):
+    """ Pass all the patches in a WSI for validation prediction
+    """
+    pred_list = []
+    pred_fname = []
+    running_corrects = 0
+
+    if True:
+        for m in model.modules():
+            if isinstance(m, nn.BatchNorm2d):
+                m.track_running_stats = False
+    
+    with torch.no_grad():
+        for i, (inputs, labels, inputs_cluster) in enumerate(test_images):
+                
+            inputs = inputs.cuda()
+            labels = labels.cuda()
+            outputs, outputs_patch, outputs_attn = model(inputs)
+            _, preds = torch.max(outputs, 1)
+            print(outputs)
+            running_corrects += torch.sum(preds == labels.data)
+        
+        epoch_acc = running_corrects.double() / test_images_label
+
+            
+
+    print('Test Accuracy: ', epoch_acc)            
+    
+    # Confusion Matrix
+    # label_map = {0: 'Normal', 1: 'Disease'}
+    # actual_label = pd.Series([label_map[x] for x in pred_df['actual'].tolist()], name='Actual')
+    # predicted_label = pd.Series([label_map[x] for x in pred_list], name='Predicted')
+    # print(pd.crosstab(actual_label, predicted_label))
+    
+    # return sum(pred_df['actual']==pred_df['prediction'])/pred_df.shape[0]
+    return epoch_acc
     
 def softmax(x):
     """Compute softmax values for each sets of scores in x."""
@@ -52,10 +91,10 @@ def compute_attn_df(tdl, model, track_running_stats=True):
     
     # Perform WSI-Batch Normalization for validation, switch off when transfer learning 
     # For batch size=1 - WSI normalization during testing phase works better
-    if track_running_stats:
-        for m in enc_attn.modules():
-            if isinstance(m, nn.BatchNorm2d):
-                m.track_running_stats = False
+    # if track_running_stats:
+    #     for m in enc_attn.modules():
+    #         if isinstance(m, nn.BatchNorm2d):
+    #             m.track_running_stats = False
         
     attn_rep = torch.tensor([])
     inputs_rep = torch.tensor([])
@@ -77,7 +116,7 @@ def compute_attn_df(tdl, model, track_running_stats=True):
     A = F.softmax(A, dim=1)
     M = torch.mm(A, inputs_rep)
     Y_prob = classifier_layer(M)     
-        
+    
     return torch.max(Y_prob, 1)[1].item(), attn_rep.cpu().numpy().flatten()
 
 def eval_test(model, df, data_transforms):

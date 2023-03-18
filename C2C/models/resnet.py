@@ -10,7 +10,7 @@ class WSIClassifier(nn.Module):
         self.D = 32
         self.K = 1
         
-        resnet = models.resnet18(pretrained=True)
+        resnet = models.resnet50(pretrained=True)
         
         # Since patches in each batch belong to a WSI, switching off batch statistics tracking
         # Or reinitializing batch parameters and changing momentum for quick domain adoption
@@ -29,7 +29,7 @@ class WSIClassifier(nn.Module):
             
         modules = list(resnet.children())[:-1]          
         self.resnet_head = nn.Sequential(*modules)
-        self.resnet_tail = nn.Sequential(nn.Linear(512, 256),
+        self.resnet_tail = nn.Sequential(nn.Linear(2048, 256),
                                         nn.ReLU(),
                                         nn.Linear(256, self.L),
                                         nn.ReLU())
